@@ -1,0 +1,493 @@
+
+---
+
+## 📦 ARCHIVO 12: HOWTO.txt
+
+```text name=HOWTO.txt
+================================================================================
+PROCESADOR AUDIO CANAL SUR RADIO - DOCUMENTACIÓN TÉCNICA DETALLADA
+================================================================================
+
+VERSIÓN: 1.0.0
+FECHA: 2026-02-09
+
+================================================================================
+1. DESCRIPCIÓN GENERAL DEL PROYECTO
+================================================================================
+
+La aplicación "Procesador Audio Canal Sur Radio" es una solución web de 
+procesamiento de audio que permite:
+
+- Subir archivos de audio en múltiples formatos
+- Aplicar tres tipos de filtros avanzados:
+  * Reductor de Ruido (RNNoise)
+  * Ecualizador Gráfico (High-Pass + 5 Bandas + Low-Pass)
+  * Normalizador Dinámico (Dynaudnorm)
+- Generar previews en tiempo real (MP3)
+- Descargar versiones procesadas (MP2)
+- Visualizar waveforms de audio
+- Generar múltiples versiones con diferentes parámetros
+
+Stack Tecnológico:
+- Frontend: HTML5, CSS3, JavaScript (vanilla)
+- Backend: PHP 7.4+
+- Procesamiento: FFmpeg 4.2+
+- Servidor: Apache 2.4+
+- Base de datos: Ninguna (archivos en directorios)
+
+================================================================================
+2. ARQUITECTURA Y FLUJO DE APLICACIÓN
+================================================================================
+
+2.1 SESIONES Y GESTIÓN DE USUARIOS
+------------------------------------
+
+Identificación:
+- Cada usuario se identifica por su IP (REMOTE_ADDR)
+- Las sesiones duran 15 minutos (SESSION_TIMEOUT = 900s)
+- Los directorios temporales se nombran: IP_timestamp (ej: 10.204.2.5_1707468000)
+
+Validación de Sesión:
+- Al cargar index.php se verifica si existe sesión anterior del mismo IP
+- Si la sesión anterior no ha expirado (< 15 min), se reutiliza
+- Si ha expirado, se elimina y se crea una nueva
+
+Estado de Usuario:
+- Guardado en variable global JavaScript `state`
+- Incluye: filtros activados, parámetros, archivo subido, etc.
+- Se mantiene en memoria del navegador (SessionStorage opcional)
+
+2.2 FLUJO DE PROCESAMIENTO
+---------------------------
+
+1. USUARIO ACCEDE A /noise/
+   └─ index.php carga:
+      ├─ Constantes de configuración
+      ├─ Validación de FFmpeg y modelos RNNoise
+      ├─ Detección de sesiones existentes
+      └─ Renderizado HTML + CSS + JavaScript
+
+2. USUARIO SUBE ARCHIVO
+   └─ api/upload.php:
+      ├─ Recibe multipart/form-data (archivo + session_dir)
+      ├─ Valida formato de audio con ffprobe
+      ├─ Convierte a 48 kHz WAV (si necesario)
+      ├─ Genera MP3 preview original (128 kbps)
+      ├─ Genera PNG waveform con showwavespic
+      └─ Retorna JSON con URLs y metadatos
+
+3. USUARIO CONFIGURA FILTROS
+   └─ JavaScript (en index.php):
+      ├─ Toggle de filtros (RNNoise, EQ, Dynaudnorm)
+      ├─ Selección de modelo RNNoise
+      ├─ Ajuste de parámetros (sliders)
+      ├─ Dibujo del gráfico de respuesta EQ (canvas)
+      └─ Estado guardado en objeto `state`
+
+4. USUARIO PULSA "APLICAR"
+   └─ api/process.php:
+      ├─ Verifica límite de concurrencia (máx 10 procesos)
+      ├─ Crea lock file para controlar acceso
+      ├─ Construye comando FFmpeg dinámicamente
+      ├─ Ejecuta FFmpeg con timeout (600s)
+      ├─ Genera MP3 preview (128 kbps, 48 kHz)
+      ├─ Genera MP2 descargable (256 kbps, 48 kHz, estéreo)
+      ├─ Genera PNG waveform
+      ├─ Limpia lock file
+      └─ Retorna JSON con URLs de salida
+
+5. USUARIO VE PREVIEWS
+   └─ index.php (JavaScript):
+      ├─ Renderiza contenedor de previews
+      ├─ Carga MP3 en elemento <audio>
+      ├─ Renderiza waveform en <canvas>
+      ├─ Permite reproducción con controles HTML5
+      └─ Proporciona botón de descarga para MP2
+
+6. USUARIO DESCARGA ARCHIVO
+   └─ api/download.php:
+      ├─ Valida parámetros (filename, session_dir)
+      ├─ Verifica que ruta no escapa de TEMP_DIR
+      ├─ Configura headers HTTP para descarga
+      └─ Envía archivo MP2 al navegador
+
+7. USUARIO PULSA "FINALIZAR"
+   └─ api/finalize.php:
+      ├─ Elimina toda la carpeta de sesión
+      ├─ Borra todos los archivos temporales
+      └─ Retorna JSON de confirmación
+
+================================================================================
+3. DESCRIPCIÓN DETALLADA DE CADA ARCHIVO
+================================================================================
+
+3.1 index.php
+-------------
+
+Propósito: 
+- Interfaz principal de la aplicación
+- Gestión de sesiones
+- Validación de dependencias
+
+Características principales:
+
+a) CONFIGURACIÓN INICIAL (líneas 1-40)
+   - Detecta IP del cliente: $_SERVER['REMOTE_ADDR']
+   - Define constantes:
+     * FFMPEG_PATH: ruta a ejecutable ffmpeg
+     * TEMP_DIR: directorio temporal (/var/www/html/noise/temp)
+     * RNNOISE_MODELS_DIR: ubicación de modelos (.rnnn)
+     * SESSION_TIMEOUT: 900s (15 minutos)
+     * FFMPEG_TIMEOUT: 600s (10 minutos)
+     * MAX_CONCURRENT_PROCESSES: 10
+     * OUTPUT_SAMPLERATE: 48000 Hz
+   
+   - Crea directorio temp si no existe: mkdir(TEMP_DIR, 0750, true)
+   - Genera directorio de sesión: TEMP_DIR/IP_timestamp
+   - Detecta sesiones existentes: glob(TEMP_DIR/IP_*)
+   - Limpia sesiones expiradas (> 15 min)
+
+b) VALIDACIONES (líneas 42-60)
+   - Verifica FFmpeg en FFMPEG_PATH
+   - Verifica existencia de modelos RNNoise:
+     * bd.rnnn (Discursos)
+     * cb.rnnn (General - default)
+     * mp.rnnn (Música)
+     * sh.rnnn (Ruidos extremos)
+   - Muestra error fatal si falta alguno
+
+c) HTML STRUCTURE (líneas ~90-600)
+   - <header>: Título y descripción
+   - <main>:
+     * .upload-section: Subida de archivos (drag-drop + click)
+     * #alertContainer: Área de alertas dinámicas
+     * .filters-section: 3 grupos de filtros
+       - RNNoise: tabla de modelos + slider mix
+       - Ecualizador: HP, canvas, 5 faders verticales, LP
+       - Dynaudnorm: slider intensidad
+     * .action-buttons: APLICAR y FINALIZAR
+     * .previews-container: lista de archivos generados
+
+d) ESTILOS CSS (líneas ~600-1100)
+   - Diseño responsive con flexbox
+   - Tema gradiente morado
+   - Animaciones (spinner, transitions)
+   - Sliders personalizados
+   - Canvas para ecualizador y waveforms
+   - Modales para confirmaciones
+
+e) JAVASCRIPT (líneas ~1100-1400)
+   - CONFIG: objeto con IP y sessionDir
+   - state: objeto con estado global
+     * audioFile: File object del archivo subido
+     * filters: configuración de los 3 filtros
+     * filtersApplied: contador de versiones generadas
+   - setupEventListeners(): vincular todos los eventos
+   - handleFileSelect(): procesamiento de archivo seleccionado
+   - uploadFile(): enviar a api/upload.php (AJAX)
+   - toggleFilter(): activar/desactivar filtro
+   - applyFilters(): enviar a api/process.php (AJAX)
+   - drawEQResponse(): dibujar gráfico en canvas
+   - renderPreview(): mostrar archivo generado
+   - downloadFile(): descargar MP2
+   - confirmFinalize(): mostrar modal de confirmación
+   - showSpinner()/hideSpinner(): loader visual
+
+Flujo de Usuario:
+1. Usuario carga página → setupEventListeners()
+2. Usuario selecciona archivo → handleFileSelect() → uploadFile()
+3. Usuario ajusta filtros → toggleFilter(), drawEQResponse()
+4. Usuario pulsa APLICAR → applyFilters()
+5. Usuario ve previews → renderPreview()
+6. Usuario descarga → downloadFile()
+7. Usuario pulsa FINALIZAR → confirmFinalize() → confirmFinalizeAction()
+
+3.2 api/upload.php
+-------------------
+
+Propósito:
+- Recibir archivo de audio subido
+- Validar formato
+- Convertir a 48 kHz WAV
+- Generar preview MP3 y waveform PNG
+
+Entrada (POST multipart/form-data):
+- $_FILES['audio']: archivo de audio
+- $_POST['session_dir']: directorio de sesión (ej: 10.204.2.5_1707468000)
+
+Proceso:
+
+1. VALIDACIÓN (líneas 20-35)
+   - Verifica método POST
+   - Verifica que $_FILES['audio'] existe y sin error
+   - Valida que session_dir es seguro (regex alphanuméricas)
+   - Verifica que directorio de sesión existe
+
+2. GUARDADO TEMPORAL (líneas 37-43)
+   - Obtiene: uploadedFile = $_FILES['audio']['tmp_name']
+   - Sanitiza nombre original: preg_replace(/[^a-zA-Z0-9\-_]/, '')
+   - Guarda en: $sessionPath/original_uploaded
+
+3. INSPECCIÓN CON FFPROBE (líneas 45-60)
+   - Ejecuta ffprobe: ffprobe -print_format json -show_format -show_streams
+   - Extrae:
+     * channels: número de canales (1=mono, 2=estéreo)
+     * sample_rate: frecuencia de muestreo original
+     * duration: duración total en segundos
+
+4. RESAMPLING A 48 kHz (líneas 62-83)
+   - Ejecuta FFmpeg: ffmpeg -i input -acodec pcm_s16le -ar 48000 output.wav
+   - Convierte a 48 kHz PCM 16-bit WAV
+   - Mantiene número de canales original
+   - Salida: $sessionPath/original.wav
+
+5. GENERACIÓN DE PREVIEW MP3 (líneas 85-96)
+   - Ejecuta: ffmpeg -i original.wav -q:a 5 -b:a 128k original.mp3
+   - Bitrate: 128 kbps (formato web-friendly)
+   - Quality: -q:a 5 (variable, buena calidad)
+   - Salida: $sessionPath/original.mp3
+
+6. GENERACIÓN DE WAVEFORM (líneas 98-110)
+   - Ejecuta showwavespic: ffmpeg -i original.mp3 -filter_complex showwavespic
+   - Parámetros:
+     * s=-1x100: ancho dinámico, alto fijo 100px
+     * colors=0x87CEEB: azul claro (lightblue en hex)
+     * scale=log: escala logarítmica para mejor visualización
+   - Salida: $sessionPath/original.png
+
+Salida (JSON):
+{
+  "success": true,
+  "preview_url": "/noise/temp/IP_timestamp/original.mp3",
+  "waveform_url": "/noise/temp/IP_timestamp/original.png",
+  "duration": "00:05:42",
+  "channels": 2,
+  "sample_rate": 48000,
+  "filename": "nombre_archivo"
+}
+
+3.3 api/process.php
+--------------------
+
+Propósito:
+- Aplicar filtros de audio (RNNoise, EQ, Dynaudnorm)
+- Generar MP3 preview y MP2 descargable
+- Controlar concurrencia de procesos
+
+Entrada (POST JSON):
+{
+  "session_dir": "10.204.2.5_1707468000",
+  "original_filename": "mi_audio",
+  "suffix": 1,
+  "filters": {
+    "rnnoise": {
+      "model": "cb.rnnn",
+      "mix": 0.8
+    },
+    "eq": {
+      "hp": {"freq": 200},
+      "bands": [0, 1.5, 0, -2.0, 0],
+      "lp": {"freq": 3000}
+    },
+    "dynaudnorm": {
+      "intensity": 0.5
+    },
+    "channels": 2,
+    "sample_rate": 48000
+  }
+}
+
+Proceso:
+
+1. VALIDACIÓN DE CONCURRENCIA (líneas 30-50)
+   - Cuenta locks activos: glob('/tmp/noise_locks/*.lock')
+   - Si >= 10, retorna error 503 con mensaje amigable
+   - Si < 10, continúa y crea nuevo lock file
+
+2. CONSTRUCCIÓN DEL COMANDO FFMPEG (líneas 52-150)
+   - Función buildFFmpegCommand():
+   
+   a) DETECCIÓN DE CANALES
+      - Lee channels del archivo con getFileChannels()
+      - Retorna 1 (mono) o 2 (estéreo)
+   
+   b) CONVERSIÓN INICIAL
+      - Si RNNoise activado: fuerza a MONO (aformat=channel_layouts=mono)
+      - Razón: RNNoise entrena optimamente en mono
+      - Si no RNNoise: mantiene canales originales
+   
+   c) RNNOISE (opcional)
+      - Si filters['rnnoise'] está activo:
+        * Obtiene modelo: cb.rnnn, bd.rnnn, mp.rnnn, sh.rnnn
+        * Ejecuta: arnndn=m=/path/to/model.rnnn:mix=0.8
+        * mix: parámetro 0.0-1.0 de nivel de mezcla
+        * Procesa en MONO (por entrenamiento)
+   
+   d) ECUALIZADOR (opcional)
+      - High-Pass (si hp.enabled):
+        * highpass=f=200:poles=2
+        * f: frecuencia de corte (20-1000 Hz)
+        * poles=2: 24 dB/octava (rolloff)
+      
+      - Bandas gráficas (5 bandas):
+        * Frecuencias fijas: 125, 500, 1000, 3000, 6000 Hz
+        * Para cada banda con ganancia != 0:
+          - equalizer=f=freq:t=q:width=1.0:g=gain
+          - t=q: tipo Q (factor de calidad)
+          - width=1.0: Q factor fijo
+          - g: ganancia en dB (-6 a +6)
+      
+      - Low-Pass (si lp.enabled):
+        * lowpass=f=3000:poles=2
+        * f: frecuencia de corte (1000-8000 Hz)
+        * poles=2: 24 dB/octava (rolloff)
+   
+   e) DYNAUDNORM (opcional)
+      - Si filters['dynaudnorm'] está activo:
+        * Mapeo de intensidad (0.0-1.0) a parámetros:
+          - 0.0-0.3 (Conservador): targetrms=0.20, threshold=0.10, m=5.0
+          - 0.3-0.7 (Normal): targetrms=0.15, threshold=0.05, m=10.0
+          - 0.7-1.0 (Agresivo): targetrms=0.10, threshold=0.01, m=15.0
+        * Parámetros fijos:
+          - f=200: frame length (ideal para voz)
+          - g=15: Gaussian size
+          - p=0.9: Peak magnitude
+          - cf=0.0: Factor de compresión
+        * Comando: dynaudnorm=f=200:g=15:p=0.9:m=X:cf=0.0:targetrms=Y:threshold=Z
+   
+   f) RECONVERSIÓN A ESTÉREO
+      - Si procesó en MONO (por RNNoise):
+        * aformat=channel_layouts=stereo
+        * Expande mono a estéreo (copia a ambos canales)
+
+3. CONSTRUCCIÓN DEL COMANDO COMPLETO
+   - Encadena filtros con comas: filter1,filter2,filter3,...
+   - Estructura final:
+     ffmpeg -i original.wav \
+       -af "filter_chain" \
+       -c:a libmp3lame -q:a 5 -b:a 128k output.mp3 \
+       -c:a libtwolame -b:a 256k -ar 48000 output.mp2
+
+4. EJECUCIÓN CON TIMEOUT (líneas 152-190)
+   - Usa proc_open() para control de procesos
+   - Monitoriza status con proc_get_status()
+   - Si procesa > 600s (FFMPEG_TIMEOUT): termina con signal 9
+   - Si completa: verifica que se crearon archivos
+
+5. GENERACIÓN DE WAVEFORM (líneas 192-202)
+   - Mismo comando que en upload.php
+   - Procesa el MP3 generado: showwavespic
+
+6. PERMISOS Y RETORNO (líneas 204-215)
+   - chmod 644 en archivos generados
+   - Retorna JSON:
+     {
+       "success": true,
+       "preview_url": "/noise/temp/IP_timestamp/original_1.mp3",
+       "waveform_url": "/noise/temp/IP_timestamp/original_1.png",
+       "download_file": "original_1.mp2"
+     }
+
+Ejemplo de Cadena de Filtros Completa:
+aformat=channel_layouts=mono,arnndn=m=/usr/local/share/rnnoise-models/cb.rnnn:mix=0.8,
+highpass=f=200:poles=2,
+equalizer=f=500:t=q:width=1.0:g=1.5,equalizer=f=3000:t=q:width=1.0:g=-2.0,
+lowpass=f=3000:poles=2,
+dynaudnorm=f=200:g=15:p=0.9:m=10.0:cf=0.0:targetrms=0.15:threshold=0.05,
+aformat=channel_layouts=stereo
+
+3.4 api/get_status.php
+-----------------------
+
+Propósito:
+- Obtener estado de procesos en ejecución
+- Información de disponibilidad de slots
+
+Entrada (GET): ninguna
+
+Proceso:
+1. Cuenta locks activos: glob('/tmp/noise_locks/*.lock')
+2. Limpia locks > 15 minutos (sesiones expiradas)
+3. Retorna JSON:
+   {
+     "success": true,
+     "active_processes": 3,
+     "max_processes": 10,
+     "can_process": true
+   }
+
+Uso:
+- Verificación previa antes de APLICAR
+- Feedback al usuario: "3 de 10 procesos en marcha"
+- Permite mecanismo de reintentos
+
+3.5 api/download.php
+---------------------
+
+Propósito:
+- Descargar archivo MP2 procesado
+- Validación de seguridad (no escapa de TEMP_DIR)
+
+Entrada (GET):
+- file: nombre del archivo a descargar (ej: original_1.mp2)
+- session_dir: directorio de sesión
+
+Proceso:
+1. VALIDACIÓN (líneas 20-45)
+   - Verifica que file y session_dir no son vacíos
+   - Valida con regex que son seguros (alphanumerics, guiones, puntos, underscore)
+   - Construye ruta completa: TEMP_DIR/session_dir/file
+   - Valida que ruta no escapa: strpos(realpath($filePath), realpath($sessionPath)) === 0
+
+2. HEADERS HTTP (líneas 47-52)
+   - Content-Type: audio/mp2
+   - Content-Disposition: attachment; filename="..."
+   - Content-Length: tamaño del archivo
+   - Cache-Control: no-cache, no-store, must-revalidate
+   - Pragma: no-cache
+   - Expires: 0
+
+3. DESCARGA (línea 54)
+   - readfile($filePath): envía archivo al navegador
+   - El navegador lo descarga automáticamente
+
+Ejemplo de flujo:
+Usuario pulsa "DESCARGAR" en original_1.mp2
+  └─ JavaScript ejecuta: window.location.href = 'api/download.php?file=original_1.mp2&session_dir=10.204.2.5_1707468000'
+  └─ Navegador recibe archivo con headers de descarga
+  └─ Archivo se descarga a carpeta de Descargas del usuario
+
+3.6 api/finalize.php
+---------------------
+
+Propósito:
+- Eliminar toda la sesión del usuario
+- Limpiar archivos temporales
+- Preparar para nuevo ciclo
+
+Entrada (POST JSON):
+{
+  "session_dir": "10.204.2.5_1707468000"
+}
+
+Proceso:
+1. VALIDACIÓN (líneas 20-40)
+   - Verifica que session_dir es seguro (regex)
+   - Construye ruta: TEMP_DIR/session_dir
+   - Valida que no escapa de TEMP_DIR
+
+2. ELIMINACIÓN RECURSIVA (líneas 42-65)
+   - Función deleteDirectory($path):
+     * Escanea todos los archivos/carpetas
+     * Elimina recursivamente
+     * Borra carpeta final
+
+3. RETORNO (línea 67)
+   {
+     "success": true,
+     "message": "Sesión finalizada y archivos eliminados"
+   }
+
+Trigger:
+Usuario pulsa FINALIZAR
+  └
