@@ -1,0 +1,62 @@
+##############################################################################
+# SEGURIDAD - Reglas Apache para Procesador Audio Canal Sur Radio
+##############################################################################
+
+# Habilitar reescritura de URLs
+RewriteEngine On
+
+# Bloquear acceso directo a directorio temp/
+<Directory "/var/www/html/noise/temp">
+    Order deny,allow
+    Deny from all
+</Directory>
+
+# Permitir acceso a archivos específicos (para descarga)
+<FilesMatch "\.mp3$|\.mp2$|\.png$|\.wav$">
+    Allow from all
+</FilesMatch>
+
+# Bloquear acceso directo a scripts PHP sensibles
+<FilesMatch "^(process|upload|download|finalize)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Bloquear ejecución de scripts en directorio temp
+<Directory "/var/www/html/noise/temp">
+    php_flag engine off
+    AddHandler cgi-script .php .phtml .php3 .php4 .php5 .php6 .shtml .pl .py .jsp .asp .sh .cgi
+    <FilesMatch "\.php$">
+        Deny from all
+    </FilesMatch>
+</Directory>
+
+# Headers de seguridad
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "DENY"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Deshabilitar listado de directorios
+Options -Indexes
+
+# Proteger archivos sensibles
+<FilesMatch "^\.(htaccess|htpasswd|env)$">
+    Deny from all
+</FilesMatch>
+
+# Comprensión GZIP
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript
+</IfModule>
+
+# Cache busting para archivos estáticos
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresDefault "access plus 1 days"
+    ExpiresByType audio/mpeg "access plus 30 days"
+    ExpiresByType image/png "access plus 30 days"
+    ExpiresByType text/css "access plus 7 days"
+    ExpiresByType application/javascript "access plus 7 days"
+</IfModule>
